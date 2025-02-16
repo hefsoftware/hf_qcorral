@@ -75,12 +75,16 @@ corral::Task<bool> upload(CorralQIODevice device, std::function<corral::Task<std
                         // Proceed
                         sequenceNumber++;
                     else if (replyChar == static_cast<char>(Ctrl::NCG)) {
-                        // Ignores subsequent NCG (probably we took too much time to get first block
+                        // Ignores subsequent NCG (probably we took too much time to get first block)
+                    }
+                    else if (replyChar == static_cast<char>(Ctrl::CAN)) {
+                      // Cancel request from remote side
+                      ret=false;
                     } else if (transmitCount
                                < 4) { // Everything else is considered as a NAK. Retries.
                         transmitCount++;
+                        qDebug()<<"About to retry"<<transmitCount<<ret;
                         retry = true;
-                        break;
                     } else // Maximum number of re-transmission exceeded
                         ret = false;
                 }
@@ -100,7 +104,6 @@ corral::Task<bool> upload(CorralQIODevice device, std::function<corral::Task<std
                 device.writeChar(static_cast<char>(XModem::Ctrl::CAN));
         }
     }
-    qDebug() << "Done" << ret;
     co_return ret;
 }
 
@@ -200,8 +203,20 @@ corral::Task<bool> download(
             }
     }
   }
-  qDebug()<<"Return"<<ret;
   co_return ret;
 }
 
+corral::Task<bool> upload(CorralQIODevice device, const QByteArray &data, const std::function<void(uint32_t sizeWritten)> &callback) {
+  return upload(device, [data, callback](uint32_t block)->corral::Task<std::variant<QByteArray, bool>> {
+    uint32_t offset=block*128u;
+    if(callback)
+      callback(offset);
+    if(offset>=data.size()) {
+      co_return true;
+    }
+    auto cur=data.mid(offset, 128);
+    if(cur.size()<128) cur.append(QByteArray(128-cur.size(), 0xFF));
+    co_return cur;
+  });
+}
 }

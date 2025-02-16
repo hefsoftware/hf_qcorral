@@ -1,6 +1,7 @@
 // This file is part of corral, a lightweight C++20 coroutine libr<ary.
 //
-// Copyright (c) 2024 Hudson River Trading LLC <opensource@hudson-trading.com>
+// Copyright (c) 2024-2025 Hudson River Trading LLC
+// <opensource@hudson-trading.com>
 //
 // Permission is hereby granted, free of charge, to any person obtaining a copy
 // of this software and associated documentation files (the "Software"), to deal
@@ -50,28 +51,28 @@ concept convertible_to_any = (std::convertible_to<From, To> || ...);
 template <class From, class... To>
 concept same_as_any = (std::same_as<From, To> || ...);
 
+} // namespace detail
+
 //
 // Concepts wrapping C++20 awaitables. See
 // https://en.cppreference.com/w/cpp/language/coroutines for details.
 //
-template <class T, class Ret = Unspecified>
-concept ImmediateAwaitable = requires(T t, const T ct, Handle h) {
+template <class T, class Ret = detail::Unspecified>
+concept Awaiter = requires(T t, const T ct, Handle h) {
     { ct.await_ready() } noexcept -> std::same_as<bool>;
-    { t.await_suspend(h) } -> convertible_to_any<void, bool, Handle>;
+    { t.await_suspend(h) } -> detail::convertible_to_any<void, bool, Handle>;
     { std::forward<T>(t).await_resume() };
-} && (std::is_same_v<Ret, Unspecified> || requires(T t) {
+} && (std::is_same_v<Ret, detail::Unspecified> || requires(T t) {
     { std::forward<T>(t).await_resume() } -> std::convertible_to<Ret>;
 });
 
-} // namespace detail
-
 template <class T, class Ret = detail::Unspecified>
-concept Awaitable =
-    detail::ImmediateAwaitable<T, Ret>
+concept Awaitable = 
+    Awaiter<T, Ret>
     || requires(T t) {
-        { std::forward<T>(t).operator co_await() } -> detail::ImmediateAwaitable<Ret>;
+        { std::forward<T>(t).operator co_await() } -> Awaiter<Ret>;
     } || requires(T t) {
-        { operator co_await(std::forward<T>(t)) } -> detail::ImmediateAwaitable<Ret>;
+        { operator co_await(std::forward<T>(t)) } -> Awaiter<Ret>;
     } || detail::ThisIsAwaitableTrustMe<T, Ret>;
 
 template <class R, class Ret = detail::Unspecified>
@@ -332,8 +333,7 @@ concept Introspectable = requires(const T t, TaskTreeCollector& c) {
 
 // Required relationships between the above:
 template <class T>
-concept ValidImmediateAwaitable =
-    ImmediateAwaitable<T> &&
+concept ValidAwaiter = Awaiter<T> &&
 
     // If await_cancel() is defined (Cancellable),
     // then either it must always return true (Abortable),

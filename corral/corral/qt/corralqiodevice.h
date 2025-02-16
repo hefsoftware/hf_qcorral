@@ -127,7 +127,10 @@ public:
         ret=check();
       return ret;
     }
-    bool await_early_cancel() noexcept { m_earlyCancel=true; return false; }
+    bool await_early_cancel() noexcept {
+      m_earlyCancel=true;
+      return false;
+    }
     bool await_suspend(corral::Handle h) {
       bool ready=check();
       if(!ready && !m_earlyCancel) {
@@ -312,6 +315,11 @@ public:
   ReadIntAwaited<char> readChar() {
       return ReadIntAwaited<char>(*this);
   }
+  /**
+   * @brief Consume lines of text from the serial port.
+   * @param consume Callback that is called for each line of text. Should return true when it has read all the lines it needs.
+   * @return An awaitable
+   */
   ReadLinesAwaited readLines(std::function<bool(QString)> consume) { return ReadLinesAwaited(*this, consume); }
   DiscardAwaited discard() { return DiscardAwaited(*this); }
 };

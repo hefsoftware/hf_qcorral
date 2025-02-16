@@ -1,6 +1,7 @@
 // This file is part of corral, a lightweight C++20 coroutine library.
 //
-// Copyright (c) 2024 Hudson River Trading LLC <opensource@hudson-trading.com>
+// Copyright (c) 2024-2025 Hudson River Trading LLC
+// <opensource@hudson-trading.com>
 //
 // Permission is hereby granted, free of charge, to any person obtaining a copy
 // of this software and associated documentation files (the "Software"), to deal
@@ -31,7 +32,8 @@
 
 namespace corral::detail {
 
-template <Awaitable First, class ThenFn> class Sequence : private ProxyFrame {
+template <Awaitable First, class ThenFn>
+class Sequence : private ProxyFrame, private Noncopyable {
     static decltype(auto) getSecond(ThenFn& fn,
                                     AwaitableReturnType<First>& first) {
         if constexpr (requires { fn(std::move(first)); }) {
@@ -49,35 +51,31 @@ template <Awaitable First, class ThenFn> class Sequence : private ProxyFrame {
 
   public:
     Sequence(First first, ThenFn thenFn)
-      : first_(std::move(first)),
-        firstAw_(getAwaitable(std::forward<First>(first_))),
-        thenFn_(std::move(thenFn)) {}
-
-    Sequence(Sequence&&) = default;
+      : first_(std::move(first)), thenFn_(std::move(thenFn)) {}
 
     bool await_ready() const noexcept { return false; }
 
     void await_set_executor(Executor* e) noexcept {
         second_ = e;
-        firstAw_.await_set_executor(e);
+        first_.awaiter.await_set_executor(e);
     }
 
     auto await_early_cancel() noexcept {
         cancelling_ = true;
-        return firstAw_.await_early_cancel();
+        return first_.awaiter.await_early_cancel();
     }
 
     void await_suspend(Handle h) {
         CORRAL_TRACE("   ...sequence %p yielding to...", this);
         parent_ = h;
-        if (firstAw_.await_ready()) {
+        if (first_.awaiter.await_ready()) {
             kickOffSecond();
         } else {
             this->resumeFn = +[](CoroutineFrame* frame) {
                 auto* self = static_cast<Sequence*>(frame);
                 self->kickOffSecond();
             };
-            firstAw_.await_suspend(this->toHandle()).resume();
+            first_.awaiter.await_suspend(this->toHandle()).resume();
         }
     }
 
@@ -86,9 +84,9 @@ template <Awaitable First, class ThenFn> class Sequence : private ProxyFrame {
                      inFirstStage() ? "first" : "second");
         cancelling_ = true;
         if (inFirstStage()) {
-            return firstAw_.await_cancel(this->toHandle());
+            return first_.awaiter.await_cancel(this->toHandle());
         } else if (inSecondStage()) {
-            return second().aw.await_cancel(h);
+            return second().awaiter.await_cancel(h);
         } else {
             return false; // will carry out cancellation later
         }
@@ -106,7 +104,7 @@ template <Awaitable First, class ThenFn> class Sequence : private ProxyFrame {
         // Similarly, if we're in neither the first nor the second stage,
         // the second stage must have completed via early cancellation.
         bool ret = std::holds_alternative<std::exception_ptr>(second_) ||
-                   (inSecondStage() && second().aw.await_must_resume());
+                   (inSecondStage() && second().awaiter.await_must_resume());
         if (!ret && inSecondStage()) {
             // Destroy the second stage, which will release any resources
             // it might have held
@@ -124,36 +122,45 @@ template <Awaitable First, class ThenFn> class Sequence : private ProxyFrame {
         if (auto ex = std::get_if<std::exception_ptr>(&second_)) {
             std::rethrow_exception(*ex);
         } else {
-            return second().aw.await_resume();
+            return second().awaiter.await_resume();
         }
     }
 
     void await_introspect(auto& c) const noexcept {
         if (inFirstStage()) {
-            firstAw_.await_introspect(c);
+            first_.awaiter.await_introspect(c);
         } else if (inSecondStage()) {
-            second().aw.await_introspect(c);
+            second().awaiter.await_introspect(c);
         } else {
             c.node("sequence (degenerate)");
         }
     }
 
   private:
+    struct FirstStage {
+        [[no_unique_address]] First awaitable;
+        [[no_unique_address]] SanitizedAwaiter<First> awaiter;
+
+        explicit FirstStage(First&& aw)
+          : awaitable(std::forward<First>(aw)),
+            awaiter(std::forward<First>(awaitable)) {}
+    };
+
     // Explicitly provide a template argument, so immediate awaitables
     // would resolve to Second&& instead of Second.
     // For the same reason, don't use AwaitableType<> here.
-    using SecondAwaitable =
-            decltype(getAwaitable<Second&&>(std::declval<Second>()));
+    using SecondAwaiter =
+            decltype(getAwaiter<Second&&>(std::declval<Second>()));
 
     struct SecondStage {
         [[no_unique_address]] AwaitableReturnType<First> firstValue;
-        [[no_unique_address]] Second obj;
-        [[no_unique_address]] AwaitableAdapter<SecondAwaitable> aw;
+        [[no_unique_address]] Second awaitable;
+        [[no_unique_address]] SanitizedAwaiter<Second&&, SecondAwaiter> awaiter;
 
         explicit SecondStage(Sequence* c)
-          : firstValue(std::move(c->firstAw_).await_resume()),
-            obj(getSecond(c->thenFn_, firstValue)),
-            aw(getAwaitable<Second&&>(std::forward<Second>(obj))) {}
+          : firstValue(std::move(c->first_.awaiter).await_resume()),
+            awaitable(getSecond(c->thenFn_, firstValue)),
+            awaiter(std::forward<Second>(awaitable)) {}
     };
 
     bool inFirstStage() const noexcept {
@@ -169,7 +176,7 @@ template <Awaitable First, class ThenFn> class Sequence : private ProxyFrame {
     }
 
     void kickOffSecond() noexcept {
-        if (cancelling_ && !firstAw_.await_must_resume()) {
+        if (cancelling_ && !first_.awaiter.await_must_resume()) {
             CORRAL_TRACE("sequence %p (cancelling) first stage completed, "
                          "confirming cancellation",
                          this);
@@ -196,7 +203,7 @@ template <Awaitable First, class ThenFn> class Sequence : private ProxyFrame {
         }
 
         if (cancelling_) {
-            if (second().aw.await_early_cancel()) {
+            if (second().awaiter.await_early_cancel()) {
                 second_.template emplace<std::monostate>();
 
                 parent_.resume();
@@ -204,18 +211,17 @@ template <Awaitable First, class ThenFn> class Sequence : private ProxyFrame {
             }
         }
 
-        if (second().aw.await_ready()) {
+        if (second().awaiter.await_ready()) {
             parent_.resume();
         } else {
-            second().aw.await_set_executor(ex);
-            second().aw.await_suspend(parent_).resume();
+            second().awaiter.await_set_executor(ex);
+            second().awaiter.await_suspend(parent_).resume();
         }
     }
 
   private:
     Handle parent_;
-    [[no_unique_address]] First first_;
-    [[no_unique_address]] AwaitableAdapter<AwaitableType<First>> firstAw_;
+    [[no_unique_address]] FirstStage first_;
 
     [[no_unique_address]] ThenFn thenFn_;
     mutable std::variant<Executor*,      // running first stage
@@ -228,7 +234,6 @@ template <Awaitable First, class ThenFn> class Sequence : private ProxyFrame {
     bool cancelling_ = false;
 };
 
-
 template <class ThenFn> class SequenceBuilder {
   public:
     explicit SequenceBuilder(ThenFn fn) : fn_(std::move(fn)) {}
@@ -238,7 +243,8 @@ template <class ThenFn> class SequenceBuilder {
                  std::invocable<ThenFn, AwaitableReturnType<First> &&> ||
                  std::invocable<ThenFn>)
     friend auto operator|(First&& first, SequenceBuilder&& builder) {
-        return Sequence(std::forward<First>(first), std::move(builder.fn_));
+        return makeAwaitable<Sequence<First, ThenFn>>(
+                std::forward<First>(first), std::move(builder.fn_));
     }
 
     // Allow right associativity of SequenceBuilder's

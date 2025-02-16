@@ -1,6 +1,7 @@
 // This file is part of corral, a lightweight C++20 coroutine library.
 //
-// Copyright (c) 2024 Hudson River Trading LLC <opensource@hudson-trading.com>
+// Copyright (c) 2024-2025 Hudson River Trading LLC
+// <opensource@hudson-trading.com>
 //
 // Permission is hereby granted, free of charge, to any person obtaining a copy
 // of this software and associated documentation files (the "Software"), to deal
@@ -24,7 +25,7 @@
 
 #pragma once
 #include "detail/Promise.h"
-#include "detail/task_awaitables.h"
+#include "detail/TaskAwaiter.h"
 #include "utility.h"
 
 namespace corral {
@@ -44,12 +45,12 @@ template <class T = void> class [[nodiscard]] Task : public detail::TaskTag {
     Task() = default;
     explicit Task(detail::Promise<T>& promise) : promise_(&promise) {}
 
-    explicit operator bool() const { return promise_.get() != nullptr; }
+    bool valid() const { return promise_.get() != nullptr; }
 
     /// co_await'ing on a task starts it and suspends the caller until its
     /// completion.
-    auto operator co_await() {
-        return detail::TaskAwaitable<T>(promise_.get());
+    Awaiter<T> auto operator co_await() noexcept {
+        return detail::TaskAwaiter<T>(promise_.get());
     }
 
   private:
@@ -69,14 +70,14 @@ template <class T> Task<T> Promise<T>::get_return_object() {
 
 /// A non-cancellable awaitable which is immediately ready, producing a
 /// value of type T. It can also be implicitly converted to a Task<T>.
-template <class T> class ReadyAwaitable {
+template <class T> class ReadyAwaiter {
   public:
-    explicit ReadyAwaitable(T&& value) : value_(std::forward<T>(value)) {}
+    explicit ReadyAwaiter(T&& value) : value_(std::forward<T>(value)) {}
 
     bool await_early_cancel() const noexcept { return false; }
     bool await_ready() const noexcept { return true; }
     bool await_suspend(Handle) { return false; }
-    bool await_cancel(Handle) const { return false; }
+    bool await_cancel(Handle) noexcept { return false; }
     bool await_must_resume() const noexcept { return true; }
     T await_resume() && { return std::forward<T>(value_); }
 
@@ -88,12 +89,12 @@ template <class T> class ReadyAwaitable {
     T value_;
 };
 
-template <> class ReadyAwaitable<void> {
+template <> class ReadyAwaiter<void> {
   public:
     bool await_early_cancel() const noexcept { return false; }
     bool await_ready() const noexcept { return true; }
     bool await_suspend(Handle) { return false; }
-    bool await_cancel(Handle) const { return false; }
+    bool await_cancel(Handle) noexcept { return false; }
     bool await_must_resume() const noexcept { return true; }
     void await_resume() && {}
 
@@ -115,12 +116,12 @@ template <> class ReadyAwaitable<void> {
 ///
 /// saving on coroutine frame allocation (compared to `{ co_return; }`).
 inline Awaitable<void> auto noop() {
-    return detail::ReadyAwaitable<void>();
+    return detail::ReadyAwaiter<void>();
 }
 
 /// Create a task that immediately returns a given value when co_await'ed.
 template <class T> Awaitable<T> auto just(T value) {
-    return detail::ReadyAwaitable<T>(std::forward<T>(value));
+    return detail::ReadyAwaiter<T>(std::forward<T>(value));
 }
 
 } // namespace corral

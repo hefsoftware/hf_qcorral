@@ -1,6 +1,7 @@
 // This file is part of corral, a lightweight C++20 coroutine library.
 //
-// Copyright (c) 2024 Hudson River Trading LLC <opensource@hudson-trading.com>
+// Copyright (c) 2024-2025 Hudson River Trading LLC
+// <opensource@hudson-trading.com>
 //
 // Permission is hereby granted, free of charge, to any person obtaining a copy
 // of this software and associated documentation files (the "Software"), to deal
@@ -51,14 +52,14 @@ class Runner : private RunnerTracking, private TaskFrame {
 
     template <class Awaitable>
     CORRAL_NOINLINE decltype(auto) run(Awaitable&& awaitable) && {
-        AwaitableAdapter<Awaitable&&> adapter(
+        SanitizedAwaiter<Awaitable&&> awaiter(
                 std::forward<Awaitable>(awaitable));
         using ELTraits = EventLoopTraits<std::decay_t<EventLoop>>;
         if constexpr (requires { ELTraits::isRunning(*eventLoop_); }) {
             CORRAL_ASSERT(!ELTraits::isRunning(*eventLoop_));
         }
 
-        Executor executor(*eventLoop_, awaitable);
+        Executor executor(*eventLoop_, awaiter);
         executor_ = &executor;
         Executor* prevExec =
                 std::exchange(RunnerTracking::currentExecutor(), &executor);
@@ -67,7 +68,7 @@ class Runner : private RunnerTracking, private TaskFrame {
             RunnerTracking::currentExecutor() = prevExec;
         });
 
-        if (!adapter.await_ready()) {
+        if (!awaiter.await_ready()) {
             CoroutineFrame::resumeFn = +[](CoroutineFrame* frame) {
                 auto runner = static_cast<Runner*>(frame);
                 runner->executor_->runSoon(
@@ -80,8 +81,8 @@ class Runner : private RunnerTracking, private TaskFrame {
             };
             TaskFrame::pc =
                     reinterpret_cast<uintptr_t>(CORRAL_RETURN_ADDRESS());
-            adapter.await_set_executor(&executor);
-            adapter.await_suspend(CoroutineFrame::toHandle()).resume();
+            awaiter.await_set_executor(&executor);
+            awaiter.await_suspend(CoroutineFrame::toHandle()).resume();
             executor.runSoon();
             if (eventLoop_) {
                 ELTraits::run(*eventLoop_);
@@ -97,7 +98,7 @@ class Runner : private RunnerTracking, private TaskFrame {
                 // Do our best to clean up if there is a custom implementation
                 // of FAIL_FOR_DANGLING_TASKS that throws an exception.
                 ScopeGuard cleanupGuard([&] {
-                    if (adapter.await_cancel(CoroutineFrame::toHandle())) {
+                    if (awaiter.await_cancel(CoroutineFrame::toHandle())) {
                         // cancelled immediately
                         return;
                     }
@@ -108,19 +109,19 @@ class Runner : private RunnerTracking, private TaskFrame {
                     }
                     // failed to cancel -- we already know something is wrong,
                     // avoid follow-on errors that obscure the original issue
-                    adapter.abandon();
+                    awaiter.abandon();
                 });
                 CORRAL_FAIL_FOR_DANGLING_TASKS(
                         "Event loop stopped before the awaitable passed to "
                         "corral::run() completed",
-                        adapter);
+                        awaiter);
                 // We don't have anything to return below, so if the
                 // above failure allowed execution to proceed, we must:
                 std::terminate();
             }
         }
 
-        return adapter.await_resume();
+        return awaiter.await_resume();
     }
 
   private:
@@ -136,8 +137,7 @@ class Runner : private RunnerTracking, private TaskFrame {
 template <class EventLoop, class Awaitable>
 CORRAL_NOINLINE decltype(auto) run(EventLoop& eventLoop,
                                    Awaitable&& awaitable) {
-    return detail::Runner(eventLoop).run(
-            detail::getAwaitable(std::forward<Awaitable>(awaitable)));
+    return detail::Runner(eventLoop).run(std::forward<Awaitable>(awaitable));
 }
 
 /// Returns a pointer to the executor associated with the current

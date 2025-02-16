@@ -1,6 +1,7 @@
 // This file is part of corral, a lightweight C++20 coroutine library.
 //
-// Copyright (c) 2024 Hudson River Trading LLC <opensource@hudson-trading.com>
+// Copyright (c) 2024-2025 Hudson River Trading LLC
+// <opensource@hudson-trading.com>
 //
 // Permission is hereby granted, free of charge, to any person obtaining a copy
 // of this software and associated documentation files (the "Software"), to deal
@@ -68,7 +69,7 @@ template <class Self> class ParkingLotImpl {
     friend class Parked;
 
   protected:
-    /// Return a pointer to the awaitable whose task unparkOne()
+    /// Return a pointer to the awaiter whose task unparkOne()
     /// would wake, or nullptr if there are no waiters currently.
     /// You can use its unpark() method to wake it and remove it
     /// from the list of waiters.
@@ -79,14 +80,14 @@ template <class Self> class ParkingLotImpl {
         return nullptr;
     }
 
-    /// Wake the oldest waiter, removing it from the list of waiters.
+    /// Wake the oldest waiting task, removing it from the list of waiters.
     void unparkOne() {
         if (!parked_.empty()) {
             parked_.front().unpark();
         }
     }
 
-    /// Wake all waiters that were waiting when the call to unparkAll() began.
+    /// Wake all tasks that were waiting when the call to unparkAll() began.
     void unparkAll() {
         auto parked = std::move(parked_);
         while (!parked.empty()) {

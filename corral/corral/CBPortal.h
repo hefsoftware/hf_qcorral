@@ -1,6 +1,7 @@
 // This file is part of corral, a lightweight C++20 coroutine library.
 //
-// Copyright (c) 2024 Hudson River Trading LLC <opensource@hudson-trading.com>
+// Copyright (c) 2024-2025 Hudson River Trading LLC
+// <opensource@hudson-trading.com>
 //
 // Permission is hereby granted, free of charge, to any person obtaining a copy
 // of this software and associated documentation files (the "Software"), to deal
@@ -207,7 +208,7 @@ template <class... Ts> class CBPortal {
     CBPortal(CBPortal&&) = delete;
     CBPortal& operator=(CBPortal&&) = delete;
 
-    // Awaitable interface. The result type is as follows:
+    // Awaiter interface. The result type is as follows:
     // - `CBPortal<>`: `void`
     // - `CBPortal<T>`: `T`
     // - `CBPortal<Ts...>`: `std::tuple<Ts...>`
@@ -363,14 +364,18 @@ template <class... Ts> void CBPortal<Ts...>::wakeUp() {
 
 namespace detail {
 
-// To enable the untilCBCalled() use case without any portals supplied,
-// we need to lift the non-movable restriction.
-template <class... Ts> class MovableCBPortal : public CBPortal<Ts...> {
-  public:
-    MovableCBPortal() = default;
-    MovableCBPortal(MovableCBPortal&& p) noexcept {
-        CORRAL_ASSERT(p.canMove());
-    }
+template <class... Ts> struct InlineCBPortalTag {};
+
+template <class T> struct CBPortalTraits;
+template <class... Ts> struct CBPortalTraits<CBPortal<Ts...>&> {
+    static constexpr const bool IsExternal = true;
+    using PortalType = CBPortal<Ts...>&;
+    CBPortal<Ts...>& toPortal(CBPortal<Ts...>& p) { return p; }
+};
+template <class... Ts> struct CBPortalTraits<InlineCBPortalTag<Ts...>> {
+    static constexpr const bool IsExternal = false;
+    using PortalType = CBPortal<Ts...>;
+    CBPortal<Ts...> toPortal(InlineCBPortalTag<Ts...>) { return {}; }
 };
 
 enum class CBPortalProxyStatus : uint8_t {
@@ -392,35 +397,39 @@ struct DoNothing {
 };
 
 template <class InitiateFn, class CancelFn, class... CBPortals>
-class CBPortalProxy {
+class CBPortalProxy : private detail::Noncopyable {
     static_assert(sizeof...(CBPortals) > 0,
                   "at least one bridge callback is required");
     static constexpr bool Singular = sizeof...(CBPortals) == 1;
+
     static constexpr bool PortalsAreExternal =
-            (std::is_lvalue_reference_v<CBPortals> || ...);
-    using AwaitableType = std::conditional_t<
+            (CBPortalTraits<CBPortals>::IsExternal && ...);
+    static constexpr bool PortalsAreInline =
+            (!CBPortalTraits<CBPortals>::IsExternal && ...);
+    static_assert(PortalsAreExternal || PortalsAreInline,
+                  "all CBPortals must be either references or inline");
+
+    using Awaitable = std::conditional_t<
             Singular,
-            std::tuple_element_t<0, std::tuple<CBPortals...>>&,
-            detail::AnyOf<CBPortals&...>>;
+            std::tuple_element_t<0,
+                                 std::tuple<typename CBPortalTraits<
+                                         CBPortals>::PortalType...>>&,
+            detail::AwaiterMaker<
+                    detail::AnyOf<
+                            typename CBPortalTraits<CBPortals>::PortalType&...>,
+                    typename CBPortalTraits<CBPortals>::PortalType&...>>;
 
     using ProxyStatus = CBPortalProxyStatus;
-    ProxyStatus getProxyStatus() const {
-        return std::get<0>(cbs_).executor_.bits();
-    }
-    void setProxyStatus(ProxyStatus st) {
-        auto& cb = std::get<0>(cbs_);
-        cb.executor_.set(cb.executor_.ptr(), st);
-    }
 
   public:
-    // Constructor with external CBPortals (which are referenced)
-    CBPortalProxy(InitiateFn&& initiateFn,
-                  CancelFn&& cancelFn,
-                  CBPortals&... cbs)
-        requires PortalsAreExternal
+    explicit CBPortalProxy(InitiateFn&& initiateFn,
+                           CancelFn&& cancelFn,
+                           CBPortals&... portals)
+        requires(PortalsAreExternal)
       : initiateFn_(std::forward<InitiateFn>(initiateFn)),
         cancelFn_(std::forward<CancelFn>(cancelFn)),
-        cbs_(cbs...) {
+        portals_(portals...),
+        awaiter_(makeAwaiter()) {
         // With external portals, the user may have put a scope guard
         // in between the portal and the untilCBCalled() in order to
         // implement cancellation. We thus shouldn't propagate a
@@ -428,16 +437,16 @@ class CBPortalProxy {
         setProxyStatus(ProxyStatus::Scheduled);
     }
 
-    // Constructor with internal CBPortals (stored inline in this object),
-    // used for the single-callback overloads of untilCBCalled()
-    CBPortalProxy(InitiateFn&& initiateFn, CancelFn&& cancelFn)
+    explicit CBPortalProxy(InitiateFn&& initiateFn, CancelFn&& cancelFn)
         requires(!PortalsAreExternal)
       : initiateFn_(std::forward<InitiateFn>(initiateFn)),
-        cancelFn_(std::forward<CancelFn>(cancelFn)) {
-        // Since we own the CBPortals in this case, we can propagate
+        cancelFn_(std::forward<CancelFn>(cancelFn)),
+        awaiter_(makeAwaiter()) {
+        // With internal portals, we own the portals and can propagate
         // cancellation immediately.
         setProxyStatus(ProxyStatus::NotStarted);
     }
+
 
     bool await_ready() const noexcept { return false; }
 
@@ -453,22 +462,12 @@ class CBPortalProxy {
     }
 
     void await_set_executor(Executor* ex) noexcept {
-        // Since CBPortalProxy needs to be movable until awaited,
-        // and may carry CBPortals rather than references thereto,
-        // delay awaitable construction (which needs ultimate references
-        // to portals) until co_await.
-        if constexpr (Singular) {
-            awaitable_ = &std::get<0>(cbs_);
-        } else {
-            awaitable_.emplace(std::make_from_tuple<AwaitableType>(cbs_));
-        }
-        CORRAL_ASSERT(!awaitable_->await_ready());
-        awaitable_->await_set_executor(ex);
+        CORRAL_ASSERT(!awaiter_.await_ready());
+        awaiter_.await_set_executor(ex);
     }
 
     void await_suspend(Handle h) {
-        CORRAL_ASSERT(awaitable_ && "must call await_set_executor first");
-        awaitable_->await_suspend(h);
+        awaiter_.await_suspend(h);
 
         if (getProxyStatus() == ProxyStatus::NotStarted) {
             setProxyStatus(ProxyStatus::Scheduled);
@@ -476,7 +475,7 @@ class CBPortalProxy {
         auto getCBs = [](auto&... cbs) {
             return std::forward_as_tuple(cbs.callback()...);
         };
-        auto cbs = std::apply(getCBs, cbs_);
+        auto cbs = std::apply(getCBs, portals_);
 
         bool completed = false;
         completed_ = &completed;
@@ -493,7 +492,7 @@ class CBPortalProxy {
         bool wasCancelled = (getProxyStatus() == ProxyStatus::CancelPending);
         setProxyStatus(ProxyStatus::Initiated);
 
-        if (wasCancelled && !std::get<0>(cbs_).hasResumedParent()) {
+        if (wasCancelled && !std::get<0>(portals_).hasResumedParent()) {
             if (await_cancel(h)) {
                 h.resume();
             }
@@ -517,34 +516,45 @@ class CBPortalProxy {
                     return false;
                 }
                 cancelFn_();
-                return awaitable_->await_cancel(h);
+                return awaiter_.await_cancel(h);
         }
         CORRAL_ASSERT_UNREACHABLE();
         return true;
     }
 
-    bool await_must_resume() const noexcept {
-        return awaitable_->await_ready();
-    }
+    bool await_must_resume() const noexcept { return awaiter_.await_ready(); }
 
     decltype(auto) await_resume() && {
         if (completed_) {
             *completed_ = true;
         }
-        return std::move(*awaitable_).await_resume();
+        return std::move(awaiter_).await_resume();
     }
 
-  private:
-    Executor* executor() { return std::get<0>(cbs_).executor_; }
+  private /*methods*/:
+    decltype(auto) makeAwaiter() {
+        if constexpr (Singular) {
+            return std::get<0>(portals_);
+        } else {
+            return getAwaiter(std::make_from_tuple<Awaitable>(portals_));
+        }
+    }
 
-  private:
-    [[no_unique_address]] InitiateFn initiateFn_;
-    [[no_unique_address]] CancelFn cancelFn_;
-    std::tuple<CBPortals...> cbs_;
-    std::conditional_t<Singular,
-                       std::remove_reference_t<AwaitableType>*,
-                       std::optional<AwaitableType>>
-            awaitable_{};
+    ProxyStatus getProxyStatus() const {
+        return std::get<0>(portals_).executor_.bits();
+    }
+
+    void setProxyStatus(ProxyStatus st) {
+        auto& cb = std::get<0>(portals_);
+        cb.executor_.set(cb.executor_.ptr(), st);
+    }
+
+  private /*fields*/:
+    InitiateFn initiateFn_;
+    CancelFn cancelFn_;
+    std::tuple<typename CBPortalTraits<CBPortals>::PortalType...> portals_;
+    AwaiterType<Awaitable> awaiter_;
+
     // If this is non-null, its pointee is set to true in await_resume().
     // This allows await_suspend() to notice that the CBPortalProxy object
     // may have already been destroyed.
@@ -558,18 +568,18 @@ template <class Fn> struct CBPortalSignature : CallableSignature<Fn> {
 };
 
 
-// MakePortalFor<CB>::Type is MovableCBPortal<Args...> where Args... are the
-// parameter types of the callable object CB
+// MakePortalFor<CB>::Type is InlineCBPortalTag<Args...> where Args... are
+// the parameter types of the callable object CB
 template <class CB> struct MakePortalFor {
     using Sig = CallableSignature<CB>;
-    using Type = typename Sig::template BindArgs<MovableCBPortal>;
+    using Type = typename Sig::template BindArgs<InlineCBPortalTag>;
     static_assert(std::is_void_v<typename Sig::Ret>,
                   "Bridge callbacks return void, so the parameters of the "
                   "initiate function to which they are bound must be "
                   "callback types that return void");
 };
 
-// MakePortalsFor<CBs...>::BindPortals<T> is T<MovableCBPortal<Args...>...>
+// MakePortalsFor<CBs...>::BindPortals<T> is T<InlineCBPortalTag<Args...>...>
 // (T is any template)
 template <class... CBs> struct MakePortalsFor {
     template <template <class...> class T>
@@ -599,17 +609,17 @@ auto untilCBCalled(InitiateFn&& initiateFn,
                    CBPortal<PortalArgs...>& portal,
                    MorePortals&... morePortals) {
     using Portal = CBPortal<PortalArgs...>;
-    return detail::CBPortalProxy<InitiateFn, detail::DoNothing, Portal&,
-                                 MorePortals&...>(
-            std::forward<InitiateFn>(initiateFn), detail::DoNothing{}, portal,
-            morePortals...);
+    using Ret = detail::CBPortalProxy<InitiateFn, detail::DoNothing, Portal&,
+                                      MorePortals&...>;
+    return makeAwaitable<Ret>(std::forward<InitiateFn>(initiateFn),
+                              detail::DoNothing{}, portal, morePortals...);
 }
 
 template <class InitiateFn, std::invocable<> CancelFn>
 auto untilCBCalled(InitiateFn&& initiateFn, CancelFn&& cancelFn) {
-    return detail::PortalProxyTypeFor<InitiateFn, CancelFn>(
-            std::forward<InitiateFn>(initiateFn),
-            std::forward<CancelFn>(cancelFn));
+    using Ret = detail::PortalProxyTypeFor<InitiateFn, CancelFn>;
+    return makeAwaitable<Ret>(std::forward<InitiateFn>(initiateFn),
+                              std::forward<CancelFn>(cancelFn));
 }
 
 template <class InitiateFn> auto untilCBCalled(InitiateFn&& initiateFn) {

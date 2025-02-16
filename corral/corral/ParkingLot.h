@@ -1,6 +1,7 @@
 // This file is part of corral, a lightweight C++20 coroutine library.
 //
-// Copyright (c) 2024 Hudson River Trading LLC <opensource@hudson-trading.com>
+// Copyright (c) 2024-2025 Hudson River Trading LLC
+// <opensource@hudson-trading.com>
 //
 // Permission is hereby granted, free of charge, to any person obtaining a copy
 // of this software and associated documentation files (the "Software"), to deal
@@ -32,7 +33,7 @@ namespace corral {
 class ParkingLot : public detail::ParkingLotImpl<ParkingLot> {
   public:
     using Base = detail::ParkingLotImpl<ParkingLot>;
-    class Awaitable : public Base::Parked {
+    class Awaiter : public Base::Parked {
       public:
         using Parked::Parked;
         bool await_ready() const noexcept { return false; }
@@ -40,11 +41,11 @@ class ParkingLot : public detail::ParkingLotImpl<ParkingLot> {
         void await_resume() {}
     };
 
+    using Awaitable = Awaiter; // backwards compatibility
+
     /// Returns an awaitable which, when co_await'ed, suspends the caller
     /// until any of unpark*() functions are called.
-    [[nodiscard]] corral::Awaitable<void> auto park() {
-        return Awaitable(*this);
-    }
+    [[nodiscard]] corral::Awaiter<void> auto park() { return Awaiter(*this); }
 
     /// Resumes the earliest parked task, if any.
     void unparkOne() { return Base::unparkOne(); }

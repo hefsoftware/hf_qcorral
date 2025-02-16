@@ -109,6 +109,7 @@ static inline auto qSleepForNs(int64_t ns) {
 
 template <class Awaitable, class R, class P> static inline corral::Task<std::optional<corral::detail::AwaitableReturnType<Awaitable>>> qAwaitTimeout(std::chrono::duration<R,P> delay, Awaitable &&awaitable) {
   auto result=co_await corral::anyOf(qSleepFor(delay), std::move(awaitable));
+  co_await corral::yield;
   co_return std::get<1>(result);
 }
 namespace details {
@@ -148,6 +149,7 @@ public:
   //                      boost::posix_time::time_duration delay) {
   //     return detail::Timer(io, delay);
   // }
+  static corral::Nursery &defaultNursery() { return *g_defaultNursery; }
 private:
   static corral::Task<void> mainNursery();
   static corral::Nursery *g_defaultNursery;

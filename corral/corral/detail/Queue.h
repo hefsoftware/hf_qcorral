@@ -1,6 +1,7 @@
 // This file is part of corral, a lightweight C++20 coroutine library.
 //
-// Copyright (c) 2024 Hudson River Trading LLC <opensource@hudson-trading.com>
+// Copyright (c) 2024-2025 Hudson River Trading LLC
+// <opensource@hudson-trading.com>
 //
 // Permission is hereby granted, free of charge, to any person obtaining a copy
 // of this software and associated documentation files (the "Software"), to deal
@@ -111,6 +112,15 @@ class Queue {
             tail_ = buffer_;
         }
         ++size_;
+    }
+
+    template <std::invocable<T&> Fn> void foreach(Fn&& fn) {
+        for (T& elem : first_range()) {
+            std::forward<Fn>(fn)(elem);
+        }
+        for (T& elem : second_range()) {
+            std::forward<Fn>(fn)(elem);
+        }
     }
 
   private:
