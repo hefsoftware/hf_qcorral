@@ -1,7 +1,6 @@
 // This file is part of corral, a lightweight C++20 coroutine library.
 //
-// Copyright (c) 2024-2025 Hudson River Trading LLC
-// <opensource@hudson-trading.com>
+// Copyright (c) 2024 Hudson River Trading LLC <opensource@hudson-trading.com>
 //
 // Permission is hereby granted, free of charge, to any person obtaining a copy
 // of this software and associated documentation files (the "Software"), to deal
@@ -33,8 +32,8 @@
 
 namespace corral {
 
-/// Models a shared asynchronous operation: an awaitable of type `Awaitable`
-/// that can be awaited multiple times in parallel, modeling a task with
+/// Models a shared asynchronous operation: an awaitable of type `Object` that
+/// can be awaited multiple times in parallel, modeling a task with
 /// multiple parents. The result of the operation will be propagated to each
 /// of its parents, and the shared operation will be cancelled if all of its
 /// parents are cancelled.
@@ -58,42 +57,41 @@ namespace corral {
 /// await itself. If this occurs, it is possible for cancellations
 /// to result in the shared task being the only thing keeping itself
 /// alive, which will cause a resource leak or worse.
-template <class Awaitable> class Shared {
-    using WrappedAwaiter = detail::AwaiterType<Awaitable&>;
-    using ReturnType = decltype(std::declval<WrappedAwaiter>().await_resume());
+template <class Object> class Shared {
+    using AwaitableObj = detail::AwaitableType<Object&>;
+    using ReturnType = decltype(std::declval<AwaitableObj>().await_resume());
     using ConstRef = std::add_lvalue_reference_t<const ReturnType>;
     using Storage = detail::Storage<ReturnType>;
 
     class State;
-    class Awaiter;
+    class Awaitable;
 
   public:
     Shared() = default;
-    Shared(Awaitable&& obj);
+    Shared(Object&& obj);
     template <class... Args>
-        requires(std::is_constructible_v<Awaitable, Args...>)
+        requires(std::is_constructible_v<Object, Args...>)
     Shared(std::in_place_t, Args&&... args);
 
-    Awaitable* get() const;
+    Object* get() const;
     explicit operator bool() const { return !state_; }
-    Awaitable& operator*() const { return *get(); }
-    Awaitable* operator->() const { return get(); }
+    Object& operator*() const { return *get(); }
+    Object* operator->() const { return get(); }
 
     bool closed() const noexcept;
 
-    corral::Awaiter auto operator co_await();
+    corral::Awaitable auto operator co_await();
 
   private:
     detail::IntrusivePtr<State> state_;
 };
 
-/// Awaiter object used for a single co_await on a shared task
-template <class Awaitable>
-class Shared<Awaitable>::Awaiter : public detail::IntrusiveListItem<Awaiter> {
+/// Awaitable object used for a single co_await on a shared task
+template <class Object>
+class Shared<Object>::Awaitable : public detail::IntrusiveListItem<Awaitable> {
   public:
-    explicit Awaiter(detail::IntrusivePtr<State> state)
+    explicit Awaitable(detail::IntrusivePtr<State> state)
       : state_(std::move(state)) {}
-
     bool await_ready() const noexcept;
     auto await_early_cancel() noexcept;
     void await_set_executor(Executor* ex) noexcept;
@@ -124,19 +122,19 @@ class Shared<Awaitable>::Awaiter : public detail::IntrusiveListItem<Awaiter> {
 //
 
 /// Storage and lifetime management for the shared task underlying a Shared<T>
-template <class Awaitable>
-class Shared<Awaitable>::State : private detail::ProxyFrame,
-                                 public detail::RefCounted<State> {
+template <class Object>
+class Shared<Object>::State : private detail::ProxyFrame,
+                              public detail::RefCounted<State> {
   public:
     template <class... Args> explicit State(Args&&... args);
-    Awaitable* get() { return &awaitable_; }
+    Object* get() { return &object_; }
     bool closed() const noexcept { return result_.index() >= Cancelling; }
 
     bool ready() const noexcept;
-    auto earlyCancel(Awaiter* ptr) noexcept;
+    auto earlyCancel(Awaitable* ptr) noexcept;
     void setExecutor(Executor* ex) noexcept;
-    Handle suspend(Awaiter* ptr);
-    auto cancel(Awaiter* ptr) noexcept;
+    Handle suspend(Awaitable* ptr);
+    auto cancel(Awaitable* ptr) noexcept;
     auto mustResume() const noexcept;
     ConstRef result();
     void introspect(auto& c) const noexcept;
@@ -148,9 +146,9 @@ class Shared<Awaitable>::State : private detail::ProxyFrame,
     }
 
   private:
-    [[no_unique_address]] Awaitable awaitable_;
-    detail::SanitizedAwaiter<Awaitable&> awaiter_;
-    detail::IntrusiveList<Awaiter> parents_;
+    [[no_unique_address]] Object object_;
+    detail::AwaitableAdapter<AwaitableObj> awaitable_;
+    detail::IntrusiveList<Awaitable> parents_;
     std::variant<std::monostate,
                  std::monostate,
                  typename Storage::Type,
@@ -169,32 +167,32 @@ class Shared<Awaitable>::State : private detail::ProxyFrame,
 };
 
 
-template <class Awaitable>
+template <class Object>
 template <class... Args>
-Shared<Awaitable>::State::State(Args&&... args)
-  : awaitable_(std::forward<Args>(args)...), awaiter_(awaitable_) {
+Shared<Object>::State::State(Args&&... args)
+  : object_(std::forward<Args>(args)...),
+    awaitable_(detail::getAwaitable(object_)) {
     this->resumeFn = &State::trampoline;
 }
 
-template <class Awaitable>
-void Shared<Awaitable>::State::setExecutor(Executor* ex) noexcept {
+template <class Object>
+void Shared<Object>::State::setExecutor(Executor* ex) noexcept {
     if (parents_.empty()) {
-        awaiter_.await_set_executor(ex);
+        awaitable_.await_set_executor(ex);
     }
 }
 
-template <class Awaitable>
-bool Shared<Awaitable>::State::ready() const noexcept {
+template <class Object> bool Shared<Object>::State::ready() const noexcept {
     // If we already have some parents, make sure new arrivals don't
     // bypass the queue and try to call result() before the operation
     // officially completes; it's possible that ready() will become true
     // before the handle passed to suspend() is resumed.
     return result_.index() != Incomplete ||
-           (parents_.empty() && awaiter_.await_ready());
+           (parents_.empty() && awaitable_.await_ready());
 }
 
-template <class Awaitable>
-auto Shared<Awaitable>::State::earlyCancel(Awaiter* ptr) noexcept {
+template <class Object>
+auto Shared<Object>::State::earlyCancel(Awaitable* ptr) noexcept {
     // The first arriving parent is considered to be responsible for
     // forwarding early cancellation to the shared task. Any parent
     // that arrives after it can safely be skipped without affecting the
@@ -204,7 +202,7 @@ auto Shared<Awaitable>::State::earlyCancel(Awaiter* ptr) noexcept {
     // have retrieved the task's result.
     if (parents_.empty() && result_.index() == Incomplete) {
         // Forward early-cancel request to the shared task
-        auto syncEarlyCancelled = awaiter_.await_early_cancel();
+        auto syncEarlyCancelled = awaitable_.await_early_cancel();
         if (syncEarlyCancelled) {
             result_.template emplace<Cancelled>();
             ptr->state_ = nullptr;
@@ -217,16 +215,16 @@ auto Shared<Awaitable>::State::earlyCancel(Awaiter* ptr) noexcept {
     // Skip this parent without affecting the shared task.
     // Match the return type of 'return syncEarlyCancelled;' above.
     ptr->state_ = nullptr;
-    if constexpr (detail::Skippable<WrappedAwaiter>) {
+    if constexpr (detail::Skippable<AwaitableObj>) {
         return std::true_type{};
     } else {
         return true;
     }
 }
 
-template <class Awaitable>
-Handle Shared<Awaitable>::State::suspend(Awaiter* ptr) {
-    CORRAL_TRACE("    ...on shared awaitable %p (holding %p)", this, &awaiter_);
+template <class Object> Handle Shared<Object>::State::suspend(Awaitable* ptr) {
+    CORRAL_TRACE("    ...on shared awaitable %p (holding %p)", this,
+                 &awaitable_);
     bool isFirst = parents_.empty();
     parents_.push_back(*ptr);
     if (isFirst) {
@@ -238,7 +236,7 @@ Handle Shared<Awaitable>::State::suspend(Awaiter* ptr) {
         }
 
         try {
-            return awaiter_.await_suspend(this->toHandle());
+            return awaitable_.await_suspend(this->toHandle());
         } catch (...) {
             auto ex = std::current_exception();
             CORRAL_ASSERT(
@@ -253,19 +251,19 @@ Handle Shared<Awaitable>::State::suspend(Awaiter* ptr) {
     }
 }
 
-template <class Awaitable>
-typename Shared<Awaitable>::ConstRef Shared<Awaitable>::State::result() {
+template <class Object>
+typename Shared<Object>::ConstRef Shared<Object>::State::result() {
     // We can get here with result == CancelPending if early-cancel returned
     // false and the awaitable was then immediately ready. mustResume()
     // was checked already, so treat CancelPending like Incomplete.
     if (result_.index() == Incomplete || result_.index() == CancelPending) {
         try {
             if constexpr (std::is_same_v<ReturnType, void>) {
-                std::move(awaiter_).await_resume();
+                std::move(awaitable_).await_resume();
                 result_.template emplace<Value>();
             } else {
                 result_.template emplace<Value>(
-                        Storage::wrap(std::move(awaiter_).await_resume()));
+                        Storage::wrap(std::move(awaitable_).await_resume()));
             }
         } catch (...) {
             result_.template emplace<Exception>(std::current_exception());
@@ -291,17 +289,17 @@ typename Shared<Awaitable>::ConstRef Shared<Awaitable>::State::result() {
     }
 }
 
-template <class Awaitable>
-auto Shared<Awaitable>::State::cancel(Awaiter* ptr) noexcept {
+template <class Object>
+auto Shared<Object>::State::cancel(Awaitable* ptr) noexcept {
     if (parents_.contains_one_item()) {
         CORRAL_TRACE("cancelling shared awaitable %p (holding %p); "
                      "forwarding cancellation",
-                     this, &awaiter_);
+                     this, &awaitable_);
         CORRAL_ASSERT(&parents_.front() == ptr);
         // Prevent new parents from joining, and forward the cancellation
         // to the shared task
         result_.template emplace<Cancelling>();
-        auto syncCancelled = awaiter_.await_cancel(this->toHandle());
+        auto syncCancelled = awaitable_.await_cancel(this->toHandle());
         if (syncCancelled) {
             result_.template emplace<Cancelled>();
             ptr->unlink();
@@ -320,7 +318,7 @@ auto Shared<Awaitable>::State::cancel(Awaiter* ptr) noexcept {
         // if T is.
         CORRAL_TRACE("cancelling shared awaitable %p (holding %p); "
                      "dropping parent",
-                     this, &awaiter_);
+                     this, &awaitable_);
         ptr->unlink();
         ptr->state_ = nullptr;
 
@@ -334,7 +332,7 @@ auto Shared<Awaitable>::State::cancel(Awaiter* ptr) noexcept {
         }
 
         // Match the type of 'return syncCancelled;' above:
-        if constexpr (detail::Abortable<WrappedAwaiter>) {
+        if constexpr (detail::Abortable<AwaitableObj>) {
             return std::true_type{};
         } else {
             return true;
@@ -342,8 +340,8 @@ auto Shared<Awaitable>::State::cancel(Awaiter* ptr) noexcept {
     }
 }
 
-template <class Awaitable>
-auto Shared<Awaitable>::State::mustResume() const noexcept {
+template <class Object>
+auto Shared<Object>::State::mustResume() const noexcept {
     // This is called after an individual parent's cancellation did not
     // succeed synchronously. Early cancellation of not-the-first parent,
     // and regular cancellation of not-the-last parent, always succeed
@@ -363,9 +361,9 @@ auto Shared<Awaitable>::State::mustResume() const noexcept {
     // if the awaitable was immediately ready() after a
     // non-synchronous earlyCancel(), we get here with CancelPending
     // still set, and need to check the underlying await_must_resume().
-    bool ret = result_.index() == CancelPending ? awaiter_.await_must_resume()
+    bool ret = result_.index() == CancelPending ? awaitable_.await_must_resume()
                                                 : result_.index() != Cancelled;
-    if constexpr (detail::CancelAlwaysSucceeds<WrappedAwaiter>) {
+    if constexpr (detail::CancelAlwaysSucceeds<AwaitableObj>) {
         CORRAL_ASSERT(ret == false);
         return std::false_type{};
     } else {
@@ -373,14 +371,14 @@ auto Shared<Awaitable>::State::mustResume() const noexcept {
     }
 }
 
-template <class Awaitable>
-void Shared<Awaitable>::State::introspect(auto& c) const noexcept {
+template <class Object>
+void Shared<Object>::State::introspect(auto& c) const noexcept {
     switch (result_.index()) {
         case Cancelling:
             c.footnote("(cancelling:)");
             [[fallthrough]];
         case Incomplete:
-            c.child(awaiter_);
+            c.child(awaitable_);
             break;
         default:
             c.footnote("<complete>");
@@ -388,10 +386,10 @@ void Shared<Awaitable>::State::introspect(auto& c) const noexcept {
     }
 }
 
-template <class Awaitable> void Shared<Awaitable>::State::invoke() {
-    CORRAL_TRACE("shared awaitable %p (holding %p) resumed", this, &awaiter_);
+template <class Object> void Shared<Object>::State::invoke() {
+    CORRAL_TRACE("shared awaitable %p (holding %p) resumed", this, &awaitable_);
     if (result_.index() == Cancelling) {
-        if (awaiter_.await_must_resume()) {
+        if (awaitable_.await_must_resume()) {
             result_.template emplace<Incomplete>();
         } else {
             result_.template emplace<Cancelled>();
@@ -403,32 +401,31 @@ template <class Awaitable> void Shared<Awaitable>::State::invoke() {
     }
 }
 
-template <class Awaitable>
-void Shared<Awaitable>::Awaiter::await_set_executor(Executor* ex) noexcept {
+template <class Object>
+void Shared<Object>::Awaitable::await_set_executor(Executor* ex) noexcept {
     if (state_) {
         state_->setExecutor(ex);
     }
 }
 
-template <class Awaitable>
-bool Shared<Awaitable>::Awaiter::await_ready() const noexcept {
+template <class Object>
+bool Shared<Object>::Awaitable::await_ready() const noexcept {
     return !state_ || state_->ready();
 }
 
-template <class Awaitable>
-auto Shared<Awaitable>::Awaiter::await_early_cancel() noexcept {
+template <class Object>
+auto Shared<Object>::Awaitable::await_early_cancel() noexcept {
     return state_ ? state_->earlyCancel(this) : std::true_type{};
 }
 
-template <class Awaitable>
-Handle Shared<Awaitable>::Awaiter::await_suspend(Handle h) {
+template <class Object>
+Handle Shared<Object>::Awaitable::await_suspend(Handle h) {
     parent_ = h;
     return state_->suspend(this);
 }
 
-template <class Awaitable>
-typename Shared<Awaitable>::ConstRef //
-Shared<Awaitable>::Awaiter::await_resume() {
+template <class Object>
+typename Shared<Object>::ConstRef Shared<Object>::Awaitable::await_resume() {
     if (!state_) {
         if constexpr (std::is_same_v<ReturnType, void>) {
             return;
@@ -439,19 +436,19 @@ Shared<Awaitable>::Awaiter::await_resume() {
     return state_->result();
 }
 
-template <class Awaitable>
-auto Shared<Awaitable>::Awaiter::await_cancel(Handle) noexcept {
+template <class Object>
+auto Shared<Object>::Awaitable::await_cancel(Handle) noexcept {
     return state_ ? state_->cancel(this) : std::true_type{};
 }
 
-template <class Awaitable>
-auto Shared<Awaitable>::Awaiter::await_must_resume() const noexcept {
+template <class Object>
+auto Shared<Object>::Awaitable::await_must_resume() const noexcept {
     return state_ ? state_->mustResume() : std::false_type{};
 }
 
-template <class Awaitable>
-void Shared<Awaitable>::Awaiter::await_introspect(auto& c) const noexcept {
-    c.node("Shared::Awaiter");
+template <class Object>
+void Shared<Object>::Awaitable::await_introspect(auto& c) const noexcept {
+    c.node("Shared::Awaitable");
     if (state_) {
         state_->introspect(c);
     } else {
@@ -459,27 +456,27 @@ void Shared<Awaitable>::Awaiter::await_introspect(auto& c) const noexcept {
     }
 }
 
-template <class Awaitable>
-Shared<Awaitable>::Shared(Awaitable&& obj)
-  : state_(new State(std::forward<Awaitable>(obj))) {}
+template <class Object>
+Shared<Object>::Shared(Object&& obj)
+  : state_(new State(std::forward<Object>(obj))) {}
 
-template <class Awaitable>
+template <class Object>
 template <class... Args>
-    requires(std::is_constructible_v<Awaitable, Args...>)
-Shared<Awaitable>::Shared(std::in_place_t, Args&&... args)
+    requires(std::is_constructible_v<Object, Args...>)
+Shared<Object>::Shared(std::in_place_t, Args&&... args)
   : state_(new State(std::forward<Args>(args)...)) {}
 
-template <class Awaitable> bool Shared<Awaitable>::closed() const noexcept {
+template <class Object> bool Shared<Object>::closed() const noexcept {
     return state_ ? state_->closed() : true;
 }
 
-template <class Awaitable> Awaitable* Shared<Awaitable>::get() const {
+template <class Object> Object* Shared<Object>::get() const {
     return state_ ? state_->get() : nullptr;
 }
 
-template <class Awaitable> //
-corral::Awaiter auto Shared<Awaitable>::operator co_await() {
-    return Awaiter(state_);
+template <class Object> //
+corral::Awaitable auto Shared<Object>::operator co_await() {
+    return Awaitable(state_);
 }
 
 } // namespace corral

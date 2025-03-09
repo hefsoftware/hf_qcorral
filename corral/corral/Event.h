@@ -1,7 +1,6 @@
 // This file is part of corral, a lightweight C++20 coroutine library.
 //
-// Copyright (c) 2024-2025 Hudson River Trading LLC
-// <opensource@hudson-trading.com>
+// Copyright (c) 2024 Hudson River Trading LLC <opensource@hudson-trading.com>
 //
 // Permission is hereby granted, free of charge, to any person obtaining a copy
 // of this software and associated documentation files (the "Software"), to deal
@@ -62,7 +61,7 @@ namespace corral {
 ///
 class Event : public detail::ParkingLotImpl<Event> {
   public:
-    class Awaiter : public detail::ParkingLotImpl<Event>::Parked {
+    class Awaitable : public detail::ParkingLotImpl<Event>::Parked {
       public:
         using Parked::Parked;
         explicit operator bool() { return this->object().triggered(); }
@@ -70,9 +69,6 @@ class Event : public detail::ParkingLotImpl<Event> {
         void await_suspend(Handle h) { this->doSuspend(h); }
         void await_resume() {}
     };
-
-    using Awaitable = Awaiter; // backwards compatibility
-
 
     /// Trigger the event, waking any tasks that are waiting for it to
     /// occur.
@@ -86,14 +82,18 @@ class Event : public detail::ParkingLotImpl<Event> {
 
     /// Returns an awaitable which becomes ready when the event is triggered
     /// and is immediately ready if that has already happened.
-    [[nodiscard]] corral::Awaitable<void> auto get() { return Awaiter(*this); }
+    [[nodiscard]] corral::Awaitable<void> auto get() {
+        return Awaitable(*this);
+    }
 
     /// Alias for triggered() that allows generic code to use get() as
     /// a boolean regardless of the constness of the Event it's
     /// operating on.
     bool get() const noexcept { return triggered(); }
 
-    corral::Awaiter<void> auto operator co_await() { return Awaiter(*this); }
+    corral::Awaitable<void> auto operator co_await() {
+        return Awaitable(*this);
+    }
 
   private:
     bool triggered_ = false;

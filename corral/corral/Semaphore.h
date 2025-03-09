@@ -1,7 +1,6 @@
 // This file is part of corral, a lightweight C++20 coroutine library.
 //
-// Copyright (c) 2024-2025 Hudson River Trading LLC
-// <opensource@hudson-trading.com>
+// Copyright (c) 2024 Hudson River Trading LLC <opensource@hudson-trading.com>
 //
 // Permission is hereby granted, free of charge, to any person obtaining a copy
 // of this software and associated documentation files (the "Software"), to deal
@@ -37,9 +36,8 @@ namespace corral {
 /// `release()` increments the counter. `lock()` returns an RAII guard that
 /// wraps `acquire()` and `release()`.
 class Semaphore : public detail::ParkingLotImpl<Semaphore> {
-    template <class Retval> class Awaiter;
-
   public:
+    template <class Retval> class Awaitable;
     class Lock;
 
     explicit Semaphore(size_t initial = 1) : value_(initial) {}
@@ -82,14 +80,14 @@ class [[nodiscard]] Semaphore::Lock {
 
   private:
     explicit Lock(Semaphore& sem) : sem_(&sem) {}
-    friend class Semaphore::Awaiter<Lock>;
+    friend class Semaphore::Awaitable<Lock>;
 
   private:
     Semaphore* sem_ = nullptr;
 };
 
 template <class Retval>
-class Semaphore::Awaiter : public detail::ParkingLotImpl<Semaphore>::Parked {
+class Semaphore::Awaitable : public detail::ParkingLotImpl<Semaphore>::Parked {
   public:
     using Parked::Parked;
     bool await_ready() const noexcept { return this->object().value() > 0; }
@@ -105,11 +103,11 @@ class Semaphore::Awaiter : public detail::ParkingLotImpl<Semaphore>::Parked {
 };
 
 inline corral::Awaitable<void> auto Semaphore::acquire() {
-    return Awaiter<void>(*this);
+    return Awaitable<void>(*this);
 }
 
 inline corral::Awaitable<Semaphore::Lock> auto Semaphore::lock() {
-    return Awaiter<Lock>(*this);
+    return Awaitable<Lock>(*this);
 }
 
 inline void Semaphore::release() {

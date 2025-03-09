@@ -1,7 +1,6 @@
 // This file is part of corral, a lightweight C++20 coroutine library.
 //
-// Copyright (c) 2024-2025 Hudson River Trading LLC
-// <opensource@hudson-trading.com>
+// Copyright (c) 2024 Hudson River Trading LLC <opensource@hudson-trading.com>
 //
 // Permission is hereby granted, free of charge, to any person obtaining a copy
 // of this software and associated documentation files (the "Software"), to deal
@@ -48,7 +47,7 @@ template <class Callable> auto yieldToRun(Callable cb) {
 }
 
 
-/// An awaiter similar to std::suspend_always, but with cancellation support.
+/// An awaitable similar to std::suspend_always, but with cancellation support.
 class SuspendForever {
   public:
     bool await_ready() const noexcept { return false; }
@@ -108,17 +107,6 @@ template <std::output_iterator<uintptr_t> OutIter> class AsyncStackTrace {
     OutIter out_;
 };
 
-/// A utility function which allows delayed construction
-/// of nonmoveable awaiters.
-///
-/// The returned class is moveable (assuming the arguments are moveable),
-/// and has a one-shot `operator co_await() &&`, which will construct
-/// `T(forward<Args>(args...))` and return it.
-template <Awaiter T, class... Args>
-Awaitable auto makeAwaitable(Args&&... args) {
-    return detail::AwaiterMaker<T, Args...>(std::forward<Args>(args)...);
-}
-
 /// A wrapper around an awaitable suppressing its cancellation:
 ///
 ///    // If this line gets executed...
@@ -129,7 +117,7 @@ Awaitable auto makeAwaitable(Args&&... args) {
 ///    });
 ///    // ... and so is this one
 template <class Awaitable> auto noncancellable(Awaitable awaitable) {
-    return makeAwaitable<detail::NoncancellableAdapter<Awaitable>>(
+    return detail::CancellableAdapter<Awaitable>(
             std::forward<Awaitable>(awaitable));
 }
 
@@ -141,7 +129,7 @@ template <class Awaitable> auto noncancellable(Awaitable awaitable) {
 /// it only affects what happens _after the awaitable completes_
 /// when a cancellation has been requested.
 template <class Awaitable> auto disposable(Awaitable awaitable) {
-    return makeAwaitable<detail::DisposableAdapter<Awaitable>>(
+    return detail::DisposableAdapter<Awaitable>(
             std::forward<Awaitable>(awaitable));
 }
 
@@ -169,7 +157,8 @@ template <class Awaitable> auto disposable(Awaitable awaitable) {
 /// Make sure not to throw any exceptions from the awaitable, as they
 /// will terminate() the process.
 template <Awaitable<void> Aw> auto untilCancelledAnd(Aw&& awaitable) {
-    return makeAwaitable<detail::RunOnCancel<Aw>>(std::forward<Aw>(awaitable));
+    return detail::RunOnCancel<detail::AwaitableType<Aw>>(
+            detail::getAwaitable(std::forward<Aw>(awaitable)));
 }
 
 /// A helper macro useful in nursery bodies.

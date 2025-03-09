@@ -1,7 +1,6 @@
 // This file is part of corral, a lightweight C++20 coroutine library.
 //
-// Copyright (c) 2024-2025 Hudson River Trading LLC
-// <opensource@hudson-trading.com>
+// Copyright (c) 2024 Hudson River Trading LLC <opensource@hudson-trading.com>
 //
 // Permission is hereby granted, free of charge, to any person obtaining a copy
 // of this software and associated documentation files (the "Software"), to deal
@@ -40,13 +39,14 @@ struct TreeDumpElement {
             // the address it's currently suspended on.
             uintptr_t /*pc*/,
 
-            // If the tree node is an Introspectable awaiter,
+            // If the tree node is an Introspectable awaitable,
             // this holds its name, as reported by `node()` call.
             const char* /*name*/,
 
-            // If the tree node is an awaiter which is not Introspectable,
+            // If the tree node is an awaitable which is not Introspectable,
             // this holds its type.
-            const std::type_info* /*type*/> value;
+            const std::type_info* /*type*/>
+            value;
     int depth;
 };
 
@@ -95,8 +95,8 @@ class TaskTreeCollector {
     void* cookie_;
 };
 
-template <class Awaiter, std::invocable<const TreeDumpElement&> Sink>
-void dumpTaskTree(const Awaiter& awaiter, Sink&& sink) {
+template <class Awaitable, std::invocable<const TreeDumpElement&> Sink>
+void dumpTaskTree(const Awaitable& awaitable, Sink&& sink) {
     TaskTreeCollector collector(
             [](void* cookie, TreeDumpElement node) {
                 auto& sink_ =
@@ -104,16 +104,16 @@ void dumpTaskTree(const Awaiter& awaiter, Sink&& sink) {
                 sink_(std::move(node));
             },
             &sink);
-    if constexpr (std::is_same_v<Awaiter, Executor>) {
-        awaiter.collectTaskTree(collector);
+    if constexpr (std::is_same_v<Awaitable, Executor>) {
+        awaitable.collectTaskTree(collector);
     } else {
-        awaitIntrospect(awaiter, collector);
+        awaitIntrospect(awaitable, collector);
     }
 }
 
 template <std::output_iterator<TreeDumpElement> OutIt>
-OutIt dumpTaskTree(const auto& awaiter, OutIt out) {
-    dumpTaskTree(awaiter,
+OutIt dumpTaskTree(const auto& awaitable, OutIt out) {
+    dumpTaskTree(awaitable,
                  [&out](const TreeDumpElement& node) { *out++ = node; });
     return out;
 }

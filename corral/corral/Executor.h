@@ -1,7 +1,6 @@
 // This file is part of corral, a lightweight C++20 coroutine library.
 //
-// Copyright (c) 2024-2025 Hudson River Trading LLC
-// <opensource@hudson-trading.com>
+// Copyright (c) 2024 Hudson River Trading LLC <opensource@hudson-trading.com>
 //
 // Permission is hereby granted, free of charge, to any person obtaining a copy
 // of this software and associated documentation files (the "Software"), to deal
@@ -43,7 +42,7 @@ namespace corral {
 namespace detail {
 
 template <class Aw>
-concept RootAwaitable = Introspectable<Aw> || Awaiter<Aw>;
+concept RootAwaitable = Introspectable<Aw> || ImmediateAwaitable<Aw>;
 
 }
 
@@ -138,20 +137,10 @@ class Executor {
     explicit Executor(auto&&, const auto&&, size_t = 0) = delete;
 
     ~Executor() {
-        if (scheduled_) {
-            // We had a call pending from another executor. Based on the
-            // invariant that we can't be destroyed with our own callbacks
-            // scheduled, we must not need that call anymore; the most
-            // likely way to hit this is by destroying an UnsafeNursery
-            // inside an async task, which deals with the pending callbacks
-            // using Executor::drain().
-            scheduled_->buffer_.foreach([&](Task& task) {
-                if (task.second == this) {
-                    task.first = +[](void*) noexcept {};
-                    task.second = nullptr;
-                }
-            });
-        }
+        // If this triggers, a reference to this executor was submitted
+        // to another executor, and we're likely to get a use-after-free
+        // soon.
+        CORRAL_ASSERT(!scheduled_);
 
         CORRAL_ASSERT(buffer_.empty());
         if (running_ != nullptr) {
@@ -196,17 +185,14 @@ class Executor {
     ///     Pay attention not to starve your program with a steady flow
     ///     of ready tasks.
     void runSoon() noexcept {
-        if (running_ != nullptr || scheduled_ != nullptr) {
-            // Do nothing; our callbacks are already slated to run soon
-        } else if (current() != nullptr &&
+        if (running_ != nullptr) {
+            // do nothing
+        } else if (current() != nullptr && !scheduled_ &&
                    current()->eventLoopID_ == eventLoopID_) {
-            // Schedule the current executor to run our callbacks
-            scheduled_ = current();
-            scheduled_->runSoon(
+            scheduled_ = true;
+            current()->runSoon(
                     +[](Executor* ex) noexcept { ex->runOnce(); }, this);
         } else {
-            // No current executor, or it's for a different event loop:
-            // run our callbacks immediately
             runOnce();
         }
     }
@@ -274,7 +260,7 @@ class Executor {
 
   private:
     void runOnce() noexcept {
-        scheduled_ = nullptr;
+        scheduled_ = false;
         if (running_ == nullptr) {
             CORRAL_TRACE("--running executor--");
             drain();
@@ -329,9 +315,9 @@ class Executor {
 
     bool* running_ = nullptr;
 
-    /// Stores the pointer to an outer executor on which we've scheduled
-    /// our runOnce() to run soon, or nullptr if not scheduled.
-    Executor* scheduled_ = nullptr;
+    /// Stores true if runOnce() has been scheduled for execution
+    /// in near future.
+    bool scheduled_ = false;
 
     const void* rootAwaitable_ = nullptr;
     void (*collectTaskTree_)(const void* root,

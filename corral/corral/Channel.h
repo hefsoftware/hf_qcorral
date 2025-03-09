@@ -1,7 +1,6 @@
 // This file is part of corral, a lightweight C++20 coroutine library.
 //
-// Copyright (c) 2024-2025 Hudson River Trading LLC
-// <opensource@hudson-trading.com>
+// Copyright (c) 2024 Hudson River Trading LLC <opensource@hudson-trading.com>
 //
 // Permission is hereby granted, free of charge, to any person obtaining a copy
 // of this software and associated documentation files (the "Software"), to deal
@@ -53,10 +52,10 @@ class ReadHalf : public corral::detail::ParkingLotImpl<ReadHalf<T>> {
         return static_cast<const Channel<T>&>(*this);
     }
 
-    struct ReadAwaiter : public ReadHalf::ParkingLotImpl::Parked {
+    struct ReadAwaitable : public ReadHalf::ParkingLotImpl::Parked {
         using Base = typename ReadHalf::ParkingLotImpl::Parked;
 
-        explicit ReadAwaiter(ReadHalf& self) : Base(self) {}
+        explicit ReadAwaitable(ReadHalf& self) : Base(self) {}
 
         bool await_ready() const noexcept {
             return !channel().empty() || channel().closed();
@@ -82,7 +81,7 @@ class ReadHalf : public corral::detail::ParkingLotImpl<ReadHalf<T>> {
 
   public:
     corral::Awaitable<std::optional<T>> auto receive() {
-        return ReadAwaiter(*this);
+        return ReadAwaitable(*this);
     }
     std::optional<T> tryReceive() {
         std::optional<T> data;
@@ -123,10 +122,10 @@ class WriteHalf : public corral::detail::ParkingLotImpl<WriteHalf<T>> {
     }
 
     template <typename U>
-    struct WriteAwaiter : public WriteHalf::ParkingLotImpl::Parked {
+    struct WriteAwaitable : public WriteHalf::ParkingLotImpl::Parked {
         using Base = typename WriteHalf::ParkingLotImpl::Parked;
 
-        WriteAwaiter(WriteHalf& self, U&& data)
+        WriteAwaitable(WriteHalf& self, U&& data)
           : Base(self), data_(std::forward<U>(data)) {}
 
         bool await_ready() const noexcept {
@@ -157,7 +156,7 @@ class WriteHalf : public corral::detail::ParkingLotImpl<WriteHalf<T>> {
 
   public:
     template <typename U> corral::Awaitable<bool> auto send(U&& value) {
-        return WriteAwaiter<U>(*this, std::forward<U>(value));
+        return WriteAwaitable<U>(*this, std::forward<U>(value));
     }
     template <typename U> bool trySend(U&& value) {
         if (channel().closed() || channel().full()) {

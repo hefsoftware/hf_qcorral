@@ -1,7 +1,6 @@
 // This file is part of corral, a lightweight C++20 coroutine library.
 //
-// Copyright (c) 2024-2025 Hudson River Trading LLC
-// <opensource@hudson-trading.com>
+// Copyright (c) 2024 Hudson River Trading LLC <opensource@hudson-trading.com>
 //
 // Permission is hereby granted, free of charge, to any person obtaining a copy
 // of this software and associated documentation files (the "Software"), to deal
@@ -253,7 +252,7 @@ template <class Try, class... Catch> class TryBlockBuilder {
                                                 std::move(m_catch));
     }
 
-    corral::Awaiter<void> auto operator co_await() {
+    auto operator co_await() {
         static_assert(sizeof...(Catch) != 0,
                       "Try-block without any catch- or finally-block?");
         return TryBlock<Try, Void, Catch...>(std::forward<Try>(m_try), Void{},
@@ -295,7 +294,7 @@ class TryBlockMacroFactory {
                     std::move(catch_));
         }
 
-        corral::Awaiter<void> auto operator co_await() {
+        auto operator co_await() {
             static_assert(sizeof...(Catch) != 0,
                           "Try-block without any catch- or finally-block?");
             return TryBlock<Try, Void, Catch...>(std::forward<Try>(try_),
@@ -313,35 +312,41 @@ class TryBlockMacroFactory {
 
 
 struct RethrowCurrentException {
-    bool await_ready() const noexcept { return false; }
-    bool await_early_cancel() noexcept { return false; }
-    bool await_must_resume() const noexcept { return true; }
+    struct Awaitable {
+        bool await_ready() const noexcept { return false; }
+        bool await_early_cancel() noexcept { return false; }
+        bool await_must_resume() const noexcept { return true; }
 
-    bool await_suspend(Handle h) {
-        auto f = CoroutineFrame::fromHandle(h);
-        while (f) {
-            if (TaskFrame* task = frameCast<TaskFrame>(f)) {
-                BasePromise* p = static_cast<BasePromise*>(task);
-                auto parent = dynamic_cast<TryBlockBase*>(p->parent_);
-                if (parent && parent->exception_) {
-                    exception_ = parent->exception_;
-                    break;
+        bool await_suspend(Handle h) {
+            auto f = CoroutineFrame::fromHandle(h);
+            while (f) {
+                if (TaskFrame* task = frameCast<TaskFrame>(f)) {
+                    BasePromise* p = static_cast<BasePromise*>(task);
+                    auto parent = dynamic_cast<TryBlockBase*>(p->parent_);
+                    if (parent && parent->exception_) {
+                        exception_ = parent->exception_;
+                        break;
+                    }
+                }
+
+                if (ProxyFrame* proxy = detail::frameCast<ProxyFrame>(f)) {
+                    f = CoroutineFrame::fromHandle(proxy->followLink());
+                } else {
+                    std::terminate();
                 }
             }
-
-            if (ProxyFrame* proxy = detail::frameCast<ProxyFrame>(f)) {
-                f = CoroutineFrame::fromHandle(proxy->followLink());
-            } else {
-                std::terminate();
-            }
+            return false;
         }
-        return false;
-    }
 
-    void await_resume() { std::rethrow_exception(exception_); }
+        void await_resume() { std::rethrow_exception(exception_); }
 
-  private:
-    std::exception_ptr exception_;
+      private:
+        std::exception_ptr exception_;
+    };
+
+    auto operator co_await() const noexcept { return Awaitable{}; }
+
+    constexpr RethrowCurrentException() = default;
 };
 
 } // namespace corral::detail

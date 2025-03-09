@@ -1,7 +1,6 @@
 // This file is part of corral, a lightweight C++20 coroutine library.
 //
-// Copyright (c) 2024-2025 Hudson River Trading LLC
-// <opensource@hudson-trading.com>
+// Copyright (c) 2024 Hudson River Trading LLC <opensource@hudson-trading.com>
 //
 // Permission is hereby granted, free of charge, to any person obtaining a copy
 // of this software and associated documentation files (the "Software"), to deal
@@ -28,7 +27,6 @@
 #include "detail/Sequence.h"
 #include "detail/exception.h"
 #include "detail/wait.h"
-#include "utility.h"
 
 namespace corral {
 
@@ -49,19 +47,20 @@ namespace corral {
 /// compile. This applies even if all awaitables return void, so one can use
 /// `std::get<N>(result).has_value()` to figure out which awaitable(s)
 /// completed.
-template <Awaitable... Ts> Awaitable auto anyOf(Ts&&... awaitables) {
+template <Awaitable... Ts> auto anyOf(Ts&&... awaitables) {
     static_assert(
             sizeof...(Ts) == 0 ||
-                    (detail::Cancellable<detail::AwaiterType<Ts>> || ...),
+                    (detail::Cancellable<detail::AwaitableType<Ts>> || ...),
             "anyOf() makes no sense if all awaitables are non-cancellable");
 
-    return makeAwaitable<detail::AnyOf<Ts...>>(std::forward<Ts>(awaitables)...);
+    return detail::AnyOf<detail::AwaitableType<Ts>...>(
+            detail::getAwaitable(std::forward<Ts>(awaitables))...);
 }
 
 /// Same as above, but for variable-length ranges of awaitables.
 /// For similar reasons, returns a vector<Optional<R>>.
-template <AwaitableRange<> Range> Awaitable auto anyOf(Range&& range) {
-    return makeAwaitable<detail::AnyOfRange<Range>>(std::forward<Range>(range));
+template <AwaitableRange<> Range> auto anyOf(Range&& range) {
+    return detail::AnyOfRange<Range>(std::forward<Range>(range));
 }
 
 
@@ -75,14 +74,15 @@ template <AwaitableRange<> Range> Awaitable auto anyOf(Range&& range) {
 /// If cancellation occurs before all awaitables complete, the results
 /// of the awaitables that did complete before the cancellation may be
 /// discarded. If that's not desirable, use `corral::mostOf()` instead.
-template <Awaitable... Ts> Awaitable auto allOf(Ts&&... awaitables) {
-    return makeAwaitable<detail::AllOf<Ts...>>(std::forward<Ts>(awaitables)...);
+template <Awaitable... Ts> auto allOf(Ts&&... awaitables) {
+    return detail::AllOf<detail::AwaitableType<Ts>...>(
+            detail::getAwaitable(std::forward<Ts>(awaitables))...);
 }
 
 /// Same as above, but for variable-length ranges of awaitables.
 /// Returns a vector<R>.
-template <AwaitableRange<> Range> Awaitable auto allOf(Range&& range) {
-    return makeAwaitable<detail::AllOfRange<Range>>(std::forward<Range>(range));
+template <AwaitableRange<> Range> auto allOf(Range&& range) {
+    return detail::AllOfRange<Range>(std::forward<Range>(range));
 }
 
 
@@ -96,15 +96,14 @@ template <AwaitableRange<> Range> Awaitable auto allOf(Range&& range) {
 /// Upon cancellation, proxies cancellation to all of the awaitables;
 /// if some of them complete before cancellation and others get cancelled,
 /// may return a partial result. Hence returns a std::tuple<Optional<R>...>.
-template <Awaitable... Ts> Awaitable auto mostOf(Ts&&... awaitables) {
-    return makeAwaitable<detail::MostOf<Ts...>>(
-            std::forward<Ts>(awaitables)...);
+template <Awaitable... Ts> auto mostOf(Ts&&... awaitables) {
+    return detail::MostOf<detail::AwaitableType<Ts>...>(
+            detail::getAwaitable(std::forward<Ts>(awaitables))...);
 }
 
 /// Same as above, but for variable-length ranges of awaitables.
-template <AwaitableRange<> Range> Awaitable auto mostOf(Range&& range) {
-    return makeAwaitable<detail::MostOfRange<Range>>(
-            std::forward<Range>(range));
+template <AwaitableRange<> Range> auto mostOf(Range&& range) {
+    return detail::MostOfRange<Range>(std::forward<Range>(range));
 }
 
 /// A try/finally block allowing both try and finally blocks to be asynchronous,
@@ -154,8 +153,7 @@ auto try_(TryBlock&& tryBlock) {
 /// exception) will not work (it will std::terminate the process instead).
 ///
 /// Use `co_await corral::rethrow;` to re-throw the current exception instead.
-static constexpr const detail::CoAwaitFactory<detail::RethrowCurrentException>
-        rethrow;
+static constexpr const detail::RethrowCurrentException rethrow;
 
 /// A placeholder type for catch-all clauses in try-blocks
 /// (as `catch_([&](...) -> Task<>` is not allowed in C++).

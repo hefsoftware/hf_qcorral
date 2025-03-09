@@ -12,10 +12,10 @@ target_sources(corral PUBLIC
     corral/Channel.h
     corral/concepts.h
     corral/config.h
-    corral/corral.h
     corral/defs.h
     corral/Event.h
     corral/Executor.h
+    corral/corral.h
     corral/Nursery.h
     corral/ParkingLot.h
     corral/run.h
@@ -38,8 +38,7 @@ target_sources(corral PUBLIC
     corral/detail/Promise.h
     corral/detail/Queue.h
     corral/detail/ScopeGuard.h
-    corral/detail/Sequence.h
-    corral/detail/TaskAwaiter.h
+    corral/detail/task_awaitables.h
     corral/detail/utility.h
     corral/detail/wait.h
     corral/qt/corralqiodevice.h

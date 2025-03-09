@@ -4,18 +4,31 @@
 #include <functional>
 #include "corralqt.h"
 class CorralQIODevice;
+class QFile;
 class CorralQIODeviceInstance //, public std::enable_shared_from_this<CorralQIODeviceInstance>
 {
   friend class CorralQIODevice;
+  public:
+    ~CorralQIODeviceInstance();
+    bool write(const QByteArray &data);
+    static QString byteArrayToString(const QByteArray &data);
+  private:
   class AwaiterBase;
-  CorralQIODeviceInstance(QIODevice *device): m_device(device) {}
-
+  CorralQIODeviceInstance(QIODevice *device, QString name, bool debug);
+  bool hasDebug() {
+    return m_debugOutput!=nullptr;
+  }
+  void printDebug(QString message);
   std::unique_ptr<QIODevice> m_device;
+  std::unique_ptr<QFile> m_debugOutput;
   QByteArray m_buffer;
   AwaiterBase *m_awaiter=nullptr;
   QMetaObject::Connection m_connection;
   size_t tryRead(size_t n) {
     QByteArray temp=m_device->read(n);
+    if(!temp.isEmpty() && m_debugOutput) {
+      printDebug(QString::fromLatin1("< ")+byteArrayToString(temp));
+    }
     m_buffer+=temp;
     return temp.size();
   }
@@ -234,8 +247,11 @@ public:
   void discardReadBuffer() {
     m_instance->discardReadBuffer();
   }
-  static CorralQIODevice create(QIODevice *device);
-  static CorralQIODevice open(QIODevice *device, QIODeviceBase::OpenMode mode=QIODevice::ReadWrite);
+  static CorralQIODevice create(QIODevice *device, QString name, bool debug);
+  static CorralQIODevice open(QIODevice *device, QString name,
+                              QIODeviceBase::OpenMode mode, bool debug=false);
+  static CorralQIODevice open(QIODevice *device, QString name, bool debug);
+  static CorralQIODevice open(QIODevice *device, QString name);
   bool writeChar(char ch);
   bool write(const QByteArray &data);
   template <typename T> class NonCancellableAwaited: public CorralQIODeviceInstance::NonCancellableAwaited<T> {
@@ -248,7 +264,7 @@ public:
   };
 private:
   QIODevice *device();
-  CorralQIODevice(QIODevice *device);
+  CorralQIODevice(QIODevice *device, QString name, bool debug);
   std::shared_ptr<CorralQIODeviceInstance> m_instance={};
   class DiscardAwaited: public NonCancellableAwaited<void> {
   public:

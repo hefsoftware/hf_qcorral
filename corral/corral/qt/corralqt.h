@@ -133,7 +133,6 @@ public:
   template <class Callable, class... Args>
   static void run(Callable c, Args &&...args) {
     if(g_defaultNursery) {
-      qDebug()<<"About to start";
       g_defaultNursery->start(c, std::forward<decltype(args)>(args)...);
     }
     else {

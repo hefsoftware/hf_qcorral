@@ -1,7 +1,6 @@
 // This file is part of corral, a lightweight C++20 coroutine library.
 //
-// Copyright (c) 2024-2025 Hudson River Trading LLC
-// <opensource@hudson-trading.com>
+// Copyright (c) 2024 Hudson River Trading LLC <opensource@hudson-trading.com>
 //
 // Permission is hereby granted, free of charge, to any person obtaining a copy
 // of this software and associated documentation files (the "Software"), to deal
@@ -34,7 +33,7 @@ namespace corral {
 /// Allows suspending a task until the value of the variable, or a transition
 /// thereof, satisfies a predicate.
 template <class T> class Value {
-    class AwaiterBase;
+    class AwaitableBase;
     template <class Fn> class UntilMatches;
     template <class Fn> class UntilChanged;
 
@@ -95,7 +94,7 @@ template <class T> class Value {
 
   private:
     T value_;
-    detail::IntrusiveList<AwaiterBase> parked_;
+    detail::IntrusiveList<AwaitableBase> parked_;
 };
 
 
@@ -104,8 +103,8 @@ template <class T> class Value {
 //
 
 template <class T>
-class Value<T>::AwaiterBase
-  : public detail::IntrusiveListItem<Value<T>::AwaiterBase> {
+class Value<T>::AwaitableBase
+  : public detail::IntrusiveListItem<Value<T>::AwaitableBase> {
   public:
     void await_suspend(Handle h) {
         handle_ = h;
@@ -118,7 +117,7 @@ class Value<T>::AwaiterBase
     }
 
   protected:
-    explicit AwaiterBase(Value& cond) : cond_(cond) {}
+    explicit AwaitableBase(Value& cond) : cond_(cond) {}
 
     void park() { cond_.parked_.push_back(*this); }
     void doResume() { handle_.resume(); }
@@ -137,9 +136,9 @@ class Value<T>::AwaiterBase
 
 template <class T>
 template <class Fn>
-class Value<T>::UntilMatches : public AwaiterBase {
+class Value<T>::UntilMatches : public AwaitableBase {
   public:
-    UntilMatches(Value& cond, Fn fn) : AwaiterBase(cond), fn_(std::move(fn)) {
+    UntilMatches(Value& cond, Fn fn) : AwaitableBase(cond), fn_(std::move(fn)) {
         if (fn_(cond.value_)) {
             result_ = cond.value_;
         }
@@ -166,10 +165,10 @@ class Value<T>::UntilMatches : public AwaiterBase {
 
 template <class T>
 template <class Fn>
-class Value<T>::UntilChanged : public AwaiterBase {
+class Value<T>::UntilChanged : public AwaitableBase {
   public:
     explicit UntilChanged(Value& cond, Fn fn)
-      : AwaiterBase(cond), fn_(std::move(fn)) {}
+      : AwaitableBase(cond), fn_(std::move(fn)) {}
 
     bool await_ready() const noexcept { return false; }
     std::pair<T, T> await_resume() && { return std::move(*result_); }

@@ -1,7 +1,6 @@
 // This file is part of corral, a lightweight C++20 coroutine library.
 //
-// Copyright (c) 2024-2025 Hudson River Trading LLC
-// <opensource@hudson-trading.com>
+// Copyright (c) 2024 Hudson River Trading LLC <opensource@hudson-trading.com>
 //
 // Permission is hereby granted, free of charge, to any person obtaining a copy
 // of this software and associated documentation files (the "Software"), to deal
@@ -185,8 +184,6 @@ template <> struct ProxyFrameImpl<false> : public CoroutineFrame {
 struct ProxyFrame : public ProxyFrameImpl<frame_tags::HaveSpareBitsInPC> {
     static constexpr uintptr_t TAG = frame_tags::PROXY;
     ProxyFrame() { tagWith(TAG); }
-
-    ProxyFrame(const ProxyFrame&) = delete;
 };
 
 // A ProxyFrame that corresponds to an underlying task invocation, used in
